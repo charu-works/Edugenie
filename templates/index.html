@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EduGenie – AI Learning Assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Welcome to EduGenie 🧠✨</h1>
+      <p>Your personal AI tutor for learning support!</p>
+    </header>
+
+    <section class="card">
+      <form id="edu-form">
+        <label for="task">What would you like to do?</label>
+        <select id="task">
+          <option value="qa">❓ Ask a Question (Q&amp;A)</option>
+          <option value="explain">💡 Explain a Concept</option>
+          <option value="quiz">📝 Generate Quiz</option>
+          <option value="summary">📄 Summarize Text</option>
+          <option value="recommend">🗺️ Recommend Learning Path</option>
+          <option value="diagram">📊 Create Diagram / Flowchart</option>
+        </select>
+
+        <div id="diagram-type-wrap" class="hidden-field">
+          <label for="diagram-type">Diagram type</label>
+          <select id="diagram-type">
+            <option value="auto">Auto (let EduGenie choose)</option>
+            <option value="flowchart">Flowchart</option>
+            <option value="architecture">Architecture diagram</option>
+            <option value="sequence">Sequence diagram</option>
+            <option value="mindmap">Mind map</option>
+            <option value="er">ER diagram</option>
+            <option value="class">Class diagram (UML)</option>
+            <option value="state">State diagram</option>
+          </select>
+        </div>
+
+        <label for="input" id="input-label"></label>
+        <textarea id="input" rows="5" required></textarea>
+
+        <button type="submit" id="submit-btn">Get Answer</button>
+      </form>
+    </section>
+
+    <section id="result" class="card result hidden" aria-live="polite"></section>
+  </main>
+
+  <!-- Mermaid.js renders diagrams in the browser (needs internet access to the CDN) -->
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default", suppressErrorRendering: true });
+    window.mermaid = mermaid;
+  </script>
+
+  <script>
+    const TASKS = {
+      qa:        { button: "Get Answer",          label: "Ask EduGenie a question",       placeholder: "Ask EduGenie",        title: "Answer" },
+      explain:   { button: "Explain",             label: "Topic to explain",              placeholder: "Explore to know more",                     title: "Explanation" },
+      quiz:      { button: "Generate Quiz",       label: "Topic or passage for the quiz", placeholder: "Examine",                 title: "Quiz" },
+      summary:   { button: "Summarize",           label: "Paragraph to summarize",        placeholder: "Paste long content to summarize...", title: "Summary" },
+      recommend: { button: "Get Recommendations", label: "Topic you want to learn",       placeholder: "Suggest",                                title: "Learning Recommendations" },
+      diagram:   { button: "Create Diagram",      label: "What should the diagram show?", placeholder: "Generate image", title: "Diagram" }
+    };
+
+    // Words that make Q&A / Explain switch to the diagram feature automatically
+    const DIAGRAM_WORDS = /\b(diagram|flow\s?-?chart|architecture|sequence diagram|mind\s?-?map|er diagram|uml|class diagram|state diagram)\b/i;
+    function detectDiagramType(text) {
+      const t = text.toLowerCase();
+      if (/architecture/.test(t)) return "architecture";
+      if (/sequence/.test(t)) return "sequence";
+      if (/mind\s?-?map/.test(t)) return "mindmap";
+      if (/\ber\b|entity/.test(t)) return "er";
+      if (/uml|class diagram/.test(t)) return "class";
+      if (/state diagram/.test(t)) return "state";
+      if (/flow\s?-?chart/.test(t)) return "flowchart";
+      return "auto";
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const taskEl = $("task"), inputEl = $("input"), labelEl = $("input-label");
+    const btn = $("submit-btn"), resultEl = $("result");
+    const typeWrap = $("diagram-type-wrap"), typeEl = $("diagram-type");
+
+    function applyTask() {
+      const t = TASKS[taskEl.value];
+      labelEl.textContent = t.label;
+      inputEl.placeholder = t.placeholder;
+      btn.textContent = t.button;
+      typeWrap.classList.toggle("hidden-field", taskEl.value !== "diagram");
+    }
+    taskEl.addEventListener("change", applyTask);
+    applyTask();
+
+    // ---- minimal, safe Markdown renderer (escapes HTML first) ----
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    function renderMarkdown(src) {
+      const out = [];
+      let inList = false;
+      const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+      for (const raw of src.split(/\r?\n/)) {
+        const line = raw.trimEnd();
+        let m;
+        if (!line.trim()) { closeList(); continue; }
+        if ((m = line.match(/^\s*(#{1,6})\s+(.*)$/))) {
+          closeList();
+          const lvl = Math.min(m[1].length + 2, 6);
+          out.push(`<h${lvl}>${inline(m[2])}</h${lvl}>`);
+        } else if ((m = line.match(/^(\s*)[*\-•]\s+(.*)$/))) {
+          if (!inList) { out.push("<ul>"); inList = true; }
+          out.push(`<li style="margin-left:${Math.floor(m[1].length / 2) * 1.2}rem">${inline(m[2])}</li>`);
+        } else {
+          closeList();
+          out.push(`<p>${inline(line)}</p>`);
+        }
+      }
+      closeList();
+      return out.join("");
+    }
+
+    // ---- API calls ----
+    async function callApi(task, value, diagramType) {
+      let res;
+      if (task === "qa") {
+        res = await fetch("/qa?question=" + encodeURIComponent(value));
+      } else if (task === "recommend") {
+        res = await fetch("/learn/recommendations?topic=" + encodeURIComponent(value));
+      } else {
+        const map = { explain: ["/explain/", "topic"], summary: ["/summarize/", "text"], quiz: ["/quiz", "text"], diagram: ["/diagram", "topic"] };
+        const [url, key] = map[task];
+        const body = { [key]: value };
+        if (task === "diagram") body.type = diagramType;
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+      }
+      let data;
+      try { data = await res.json(); } catch { data = { error: "Unexpected server response." }; }
+      if (!res.ok || data.error) throw new Error(data.error || `Request failed (${res.status})`);
+      return data;
+    }
+
+    function renderQuiz(container, quiz) {
+      quiz.forEach((q, i) => {
+        const box = document.createElement("div");
+        box.className = "quiz-q";
+        const h = document.createElement("p");
+        h.innerHTML = `<strong>Q${i + 1}:</strong> `;
+        h.append(document.createTextNode(q.question));
+        box.append(h);
+        q.options.forEach((opt) => {
+          const l = document.createElement("label");
+          l.className = "option";
+          const r = document.createElement("input");
+          r.type = "radio"; r.name = "q" + i; r.value = opt;
+          l.append(r, document.createTextNode(" " + opt));
+          box.append(l);
+        });
+        const check = document.createElement("button");
+        check.type = "button"; check.textContent = "Check Answer";
+        const fb = document.createElement("div");
+        fb.className = "feedback";
+        check.onclick = () => {
+          const chosen = box.querySelector(`input[name="q${i}"]:checked`);
+          if (!chosen) { fb.textContent = "Please select an option first."; fb.className = "feedback warn"; }
+          else if (chosen.value === q.answer) { fb.textContent = "✅ Correct!"; fb.className = "feedback ok"; }
+          else { fb.textContent = "❌ Not quite. Correct answer: " + q.answer; fb.className = "feedback bad"; }
+        };
+        box.append(check, fb);
+        container.append(box);
+      });
+    }
+
+    // ---- Diagram rendering (Mermaid) ----
+    async function renderDiagram(container, code) {
+      const box = document.createElement("div");
+      box.className = "diagram-box";
+      container.append(box);
+
+      const actions = document.createElement("div");
+      actions.className = "diagram-actions";
+      const codeBtn = document.createElement("button");
+      codeBtn.type = "button"; codeBtn.textContent = "Show / hide code";
+      const dlBtn = document.createElement("button");
+      dlBtn.type = "button"; dlBtn.textContent = "Download SVG";
+      actions.append(codeBtn, dlBtn);
+      container.append(actions);
+
+      const pre = document.createElement("pre");
+      pre.className = "diagram-code hidden";
+      pre.textContent = code;
+      container.append(pre);
+      codeBtn.onclick = () => pre.classList.toggle("hidden");
+
+      if (!window.mermaid) {
+        box.textContent = "⚠️ The diagram library could not load (check your internet connection). The Mermaid code is shown below.";
+        pre.classList.remove("hidden");
+        dlBtn.disabled = true;
+        return;
+      }
+      try {
+        const { svg } = await window.mermaid.render("diagram-" + Date.now(), code);
+        box.innerHTML = svg;
+        dlBtn.onclick = () => {
+          const blob = new Blob([svg], { type: "image/svg+xml" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "edugenie-diagram.svg";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        };
+      } catch (err) {
+        box.textContent = "⚠️ The generated diagram had a syntax error. Click the button again to regenerate it, or view the code below.";
+        pre.classList.remove("hidden");
+        dlBtn.disabled = true;
+        console.error("Mermaid render error:", err);
+      }
+    }
+
+    async function showResult(task, data, value) {
+      resultEl.classList.remove("hidden", "error");
+      resultEl.innerHTML = "";
+      const h = document.createElement("h2");
+      h.textContent = task === "recommend" ? `Learning Recommendations for "${value}":` : TASKS[task].title + ":";
+      resultEl.append(h);
+      const body = document.createElement("div");
+      body.className = "result-body";
+      resultEl.append(body);
+      if (task === "quiz") renderQuiz(body, data.quiz);
+      else if (task === "diagram") await renderDiagram(body, data.mermaid);
+      else body.innerHTML = renderMarkdown(data.answer ?? data.explanation ?? data.summary ?? data.recommendation ?? "");
+    }
+
+    function showError(message) {
+      resultEl.classList.remove("hidden");
+      resultEl.classList.add("error");
+      resultEl.innerHTML = "";
+      const p = document.createElement("p");
+      p.textContent = "⚠️ " + message;
+      resultEl.append(p);
+    }
+
+    $("edu-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      let task = taskEl.value;
+      const value = inputEl.value.trim();
+      if (!value) return;
+
+      // If the user asks for a diagram inside Q&A or Explain, switch automatically
+      let diagramType = typeEl.value;
+      if ((task === "qa" || task === "explain") && DIAGRAM_WORDS.test(value)) {
+        task = "diagram";
+        diagramType = detectDiagramType(value);
+      } else if (task === "diagram" && diagramType === "auto") {
+        diagramType = detectDiagramType(value);
+      }
+
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "Thinking…";
+      resultEl.classList.remove("hidden", "error");
+      resultEl.innerHTML = '<p class="loading">EduGenie is working on it…</p>';
+      try {
+        await showResult(task, await callApi(task, value, diagramType), value);
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+  </script>
+</body>
+</html>
